@@ -18,7 +18,7 @@ from typing import Any
 
 
 APP_NAME = "Darwin NEG Control"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 BG = "#080d18"
 HEADER = "#0a1220"
@@ -1012,6 +1012,18 @@ class DarwinControlApp:
         for index, record in enumerate(records[:100]):
             timestamp = time.strftime("%H:%M:%S", time.localtime(float(record.get("timestamp", 0))))
             reasons = ", ".join(record.get("route_reasons") or []) or "single"
+            guard_events = []
+            for label, field in (
+                ("dedup", "tool_duplicates_removed"),
+                ("stalled", "tool_stalled_calls_blocked"),
+                ("capped", "tool_parallel_overflow_removed"),
+                ("recovered", "tool_recovery_inferences"),
+            ):
+                count = int(record.get(field, 0) or 0)
+                if count:
+                    guard_events.append(f"{label}:{count}")
+            if guard_events:
+                reasons = f"{reasons} · {' '.join(guard_events)}"
             self.history.insert(
                 "",
                 "end",

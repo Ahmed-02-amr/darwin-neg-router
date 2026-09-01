@@ -34,6 +34,9 @@ class Settings:
     neg_activation_threshold: float = 0.05
     neg_min_activations: int = 16
     route_tool_calls: bool = True
+    tool_phase_max_tokens: int = 4096
+    max_parallel_tool_calls: int = 32
+    unchanged_tool_result_limit: int = 2
     api_key: str = ""
     load_in_4bit: bool = True
 
@@ -72,6 +75,21 @@ class Settings:
                 1, int(os.getenv("DARWIN_NEG_MIN_ACTIVATIONS", cls.neg_min_activations))
             ),
             route_tool_calls=_bool("DARWIN_ROUTE_TOOL_CALLS", cls.route_tool_calls),
+            tool_phase_max_tokens=max(
+                512, int(os.getenv("DARWIN_TOOL_PHASE_MAX_TOKENS", cls.tool_phase_max_tokens))
+            ),
+            max_parallel_tool_calls=max(
+                1, int(os.getenv("DARWIN_MAX_PARALLEL_TOOL_CALLS", cls.max_parallel_tool_calls))
+            ),
+            unchanged_tool_result_limit=max(
+                2,
+                int(
+                    os.getenv(
+                        "DARWIN_UNCHANGED_TOOL_RESULT_LIMIT",
+                        cls.unchanged_tool_result_limit,
+                    )
+                ),
+            ),
             api_key=os.getenv("DARWIN_API_KEY", ""),
             load_in_4bit=_bool("DARWIN_LOAD_IN_4BIT", cls.load_in_4bit),
         )

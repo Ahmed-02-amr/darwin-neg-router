@@ -192,6 +192,29 @@ advertised as a compatibility alias for clients that preserve a display-name
 model ID. Streamed tool calls include the required numeric `index` field used by
 CodePilot's OpenAI event validator.
 
+### Tool-loop safety without reducing long-form output
+
+The gateway keeps the configured 16K maximum for reasoning, code, and final
+answers. A tool-enabled request first receives a 4K action-selection budget; if
+it reaches that boundary without a tool call, the request is automatically
+retried with the complete output allowance. This prevents runaway tool syntax
+from consuming the entire context while preserving long-form generation.
+
+Within one response, exact duplicate actions are collapsed by canonical
+function name and JSON arguments. Distinct parallel actions remain ordered and
+available—up to 32 by default—or one when the caller explicitly disables
+parallel tools. Across turns, an action is considered stalled only after the
+same function and arguments have produced the same result twice since the last
+real user message. Changing polling results, deliberate retries after a new
+user instruction, different arguments, and other tools remain available. A
+stalled action gets one recovery inference that must use existing evidence,
+answer, or choose a materially different action.
+
+The limits are configurable with `DARWIN_TOOL_PHASE_MAX_TOKENS`,
+`DARWIN_MAX_PARALLEL_TOOL_CALLS`, and
+`DARWIN_UNCHANGED_TOOL_RESULT_LIMIT`. Aggregate and per-request guard activity
+is exposed through `/telemetry` and in the controller's request table.
+
 ## Routing and refinement
 
 The automatic profile begins with one deterministic response. It expands to
@@ -234,7 +257,10 @@ Current local results on Ryzen 5 7600X + RTX 5070 12 GB:
 | Check | Result |
 |---|---|
 | Native/PyTorch head parity | absolute error <= `2.4e-7` |
-| Unit/integration tests | `38 passed` |
+| Unit/integration tests | `44 passed` |
+| Duplicate tool burst regression | `780` identical calls collapsed to `1` |
+| Complex parallel tool validation | `3/3` distinct live calls preserved; `24/24` synthetic |
+| Stalled-result live recovery | third identical `403` fetch blocked; recovery completed in `2` calls |
 | Executable coding micro-suite | `3/3` |
 | Forced exact-schema tool calls | `3/3` |
 | Native-head throughput case | `74.96 tok/s` (512 generated tokens) |

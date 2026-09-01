@@ -25,11 +25,16 @@ class TelemetryStore:
         self._neg_steps = 0
         self._neg_activations = 0
         self._neg_guided_steps = 0
+        self._tool_duplicates_removed = 0
+        self._tool_stalled_calls_blocked = 0
+        self._tool_parallel_overflow_removed = 0
+        self._tool_recovery_inferences = 0
 
     def record(self, candidate: Candidate, model: str, latency_seconds: float) -> None:
         metadata = candidate.metadata or {}
         routing = metadata.get("routing") or {}
         neg = metadata.get("neg") or {}
+        tool_guard = metadata.get("tool_guard") or {}
         calls = max(1, int(routing.get("inference_calls", 1) or 1))
         neg_steps = max(0, int(neg.get("steps", 0) or 0))
         neg_activations = max(0, int(neg.get("activations", 0) or 0))
@@ -51,6 +56,18 @@ class TelemetryStore:
             "neg_activation_rate": float(neg.get("activation_rate", 0.0) or 0.0),
             "neg_guided_steps": neg_guided,
             "neg_eval_ms": float(neg.get("eval_ms", 0.0) or 0.0),
+            "tool_duplicates_removed": max(
+                0, int(tool_guard.get("duplicates_removed", 0) or 0)
+            ),
+            "tool_stalled_calls_blocked": max(
+                0, int(tool_guard.get("stalled_calls_blocked", 0) or 0)
+            ),
+            "tool_parallel_overflow_removed": max(
+                0, int(tool_guard.get("parallel_overflow_removed", 0) or 0)
+            ),
+            "tool_recovery_inferences": max(
+                0, int(tool_guard.get("recovery_inferences", 0) or 0)
+            ),
         }
         with self._lock:
             self._requests += 1
@@ -62,6 +79,12 @@ class TelemetryStore:
             self._neg_steps += neg_steps
             self._neg_activations += neg_activations
             self._neg_guided_steps += neg_guided
+            self._tool_duplicates_removed += entry["tool_duplicates_removed"]
+            self._tool_stalled_calls_blocked += entry["tool_stalled_calls_blocked"]
+            self._tool_parallel_overflow_removed += entry[
+                "tool_parallel_overflow_removed"
+            ]
+            self._tool_recovery_inferences += entry["tool_recovery_inferences"]
             self._history.appendleft(entry)
 
     def record_error(self) -> None:
@@ -90,6 +113,9 @@ class TelemetryStore:
                 "neg_activations": self._neg_activations,
                 "neg_activation_rate": self._neg_activations / neg_steps if neg_steps else 0.0,
                 "neg_guided_steps": self._neg_guided_steps,
+                "tool_duplicates_removed": self._tool_duplicates_removed,
+                "tool_stalled_calls_blocked": self._tool_stalled_calls_blocked,
+                "tool_parallel_overflow_removed": self._tool_parallel_overflow_removed,
+                "tool_recovery_inferences": self._tool_recovery_inferences,
                 "recent": list(self._history),
             }
-

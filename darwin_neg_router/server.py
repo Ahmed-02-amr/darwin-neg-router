@@ -56,9 +56,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         neg_activation_threshold=settings.neg_activation_threshold,
         neg_min_activations=settings.neg_min_activations,
         route_tool_calls=settings.route_tool_calls,
+        tool_phase_max_tokens=settings.tool_phase_max_tokens,
+        max_parallel_tool_calls=settings.max_parallel_tool_calls,
+        unchanged_tool_result_limit=settings.unchanged_tool_result_limit,
     )
     gpqa = GPQAEnsembler(primary, primary, solver_tokens=2048, review_tokens=1024)
-    app = FastAPI(title="Darwin NEG Router", version="0.4.0")
+    app = FastAPI(title="Darwin NEG Router", version="0.4.1")
     app.state.settings = settings
     app.state.router = router
     app.state.gpqa = gpqa
@@ -117,6 +120,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "nvfp4",
                 "native",
                 "native-neg",
+            },
+            "tool_guard": {
+                "tool_phase_max_tokens": settings.tool_phase_max_tokens,
+                "max_parallel_tool_calls": settings.max_parallel_tool_calls,
+                "unchanged_result_limit": settings.unchanged_tool_result_limit,
+                "long_form_max_tokens": settings.default_max_tokens,
             },
         }
 

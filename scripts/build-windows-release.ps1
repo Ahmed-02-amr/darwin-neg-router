@@ -13,7 +13,7 @@ $InstallerScript = Join-Path $ProjectRoot "installer\DarwinNEGControl.iss"
 $Iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $BuildPython = if (Test-Path -LiteralPath $VenvPython) { $VenvPython } else { "python" }
-$Version = "0.4.0"
+$Version = "0.4.1"
 
 foreach ($RequiredPath in @($RuntimePath, $HeadPath, $SpecPath)) {
     if (-not (Test-Path -LiteralPath $RequiredPath)) {
