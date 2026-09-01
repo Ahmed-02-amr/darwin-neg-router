@@ -1,0 +1,215 @@
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index 280bd9e19..abfe1107f 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -5,6 +5,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+ set(TARGET server-context)
+ 
+ add_library(${TARGET} STATIC
++    neg-head.cpp
++    neg-head.h
+     server-chat.cpp
+     server-chat.h
+     server-task.cpp
+@@ -25,6 +27,12 @@ add_library(${TARGET} STATIC
+     server-schema.h
+ )
+ 
++if (MSVC)
++    set_source_files_properties(neg-head.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2;/fp:fast")
++elseif (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
++    set_source_files_properties(neg-head.cpp PROPERTIES COMPILE_OPTIONS "-march=native;-ffast-math")
++endif()
++
+ if (BUILD_SHARED_LIBS)
+     set_target_properties(${TARGET} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+ endif()
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 842e4203c..4902ddfa8 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -6,6 +6,7 @@
+ #include "server-queue.h"
+ #include "server-schema.h"
+ #include "server-stream.h"
++#include "neg-head.h"
+ 
+ #include "build-info.h"
+ #include "common.h"
+@@ -16,9 +17,11 @@
+ #include "speculative.h"
+ #include "mtmd.h"
+ #include "mtmd-helper.h"
++#include "../../src/llama-ext.h"
+ 
+ #include <algorithm>
+ #include <cstddef>
++#include <cstdlib>
+ #include <cinttypes>
+ #include <exception>
+ #include <memory>
+@@ -311,6 +314,13 @@ struct server_slot {
+ 
+     server_slot_stats stats;
+ 
++    uint64_t neg_steps = 0;
++    uint64_t neg_activations = 0;
++    uint64_t neg_guided = 0;
++    double neg_entropy_sum = 0.0;
++    float neg_entropy_max = 0.0f;
++    int64_t neg_eval_us = 0;
++
+     // accepted tokens per draft position
+     // not in server_slot_stats to avoid copying to every task result
+     std::vector<uint64_t> n_accepted_per_pos;
+@@ -349,6 +359,12 @@ struct server_slot {
+ 
+         // note: callback_on_reset() must have run before this, see release()
+         stats = {};
++        neg_steps = 0;
++        neg_activations = 0;
++        neg_guided = 0;
++        neg_entropy_sum = 0.0;
++        neg_entropy_max = 0.0f;
++        neg_eval_us = 0;
+         n_accepted_per_pos.clear();
+ 
+         n_predict_max = -1;
+@@ -841,6 +857,8 @@ private:
+ 
+     common_speculative_ptr spec;
+ 
++    std::unique_ptr<darwin_neg_head> neg;
++
+     bool add_bos_token = true;
+ 
+     int32_t n_ctx; // total context for all clients / slots
+@@ -881,6 +899,7 @@ private:
+ 
+     void destroy() {
+         spec.reset();
++        neg.reset();
+         spec_init.reset();
+ 
+         ctx_dft   = nullptr;
+@@ -1107,6 +1126,25 @@ private:
+ 
+         vocab = llama_model_get_vocab(model_tgt);
+ 
++        const char * neg_path = std::getenv("DARWIN_NEG_HEAD");
++        if (neg_path && neg_path[0] != '\0') {
++            if (has_spec) {
++                SRV_ERR("%s", "Darwin NEG is incompatible with speculative decoding in this runner\n");
++                return false;
++            }
++            neg = std::make_unique<darwin_neg_head>();
++            std::string neg_error;
++            if (!neg->load(neg_path, llama_model_n_embd_out(model_tgt), neg_error)) {
++                SRV_ERR("failed to load Darwin NEG head: %s\n", neg_error.c_str());
++                return false;
++            }
++            llama_set_embeddings_nextn(ctx_tgt, true, true);
++            SRV_INF(
++                "Darwin NEG enabled: hidden=%d reduced=%d top_k=%d threshold=%.6f temperature_scale=%.6f\n",
++                neg->hidden_size(), neg->reduced_size(), neg->top_k_value(),
++                neg->threshold_value(), neg->temperature_scale_value());
++        }
++
+         n_ctx = llama_n_ctx(ctx_tgt);
+ 
+         add_bos_token = llama_vocab_get_add_bos(vocab);
+@@ -2043,6 +2081,22 @@ private:
+         res->stats           = slot.stats;
+         res->prompt          = slot.task->tokens.detokenize(ctx_tgt, true);
+         res->response_fields = std::move(slot.task->params.response_fields);
++        if (neg && slot.neg_steps > 0) {
++            res->neg = {
++                {"enabled", true},
++                {"signal", "released_hidden_state_head"},
++                {"steps", slot.neg_steps},
++                {"activations", slot.neg_activations},
++                {"activation_rate", static_cast<double>(slot.neg_activations) / slot.neg_steps},
++                {"entropy_mean", slot.neg_entropy_sum / slot.neg_steps},
++                {"entropy_max", slot.neg_entropy_max},
++                {"guided_steps", slot.neg_guided},
++                {"threshold", neg->threshold_value()},
++                {"top_k", neg->top_k_value()},
++                {"temperature_scale", neg->temperature_scale_value()},
++                {"eval_ms", slot.neg_eval_us / 1000.0},
++            };
++        }
+ 
+         res->truncated             = slot.truncated;
+         res->n_decoded             = slot.stats.n_gen;
+@@ -3759,6 +3813,25 @@ private:
+             llama_token id;
+             {
+                 scoped_timer timer(t_sampl, n_sampl);
++                if (neg) {
++                    const int64_t neg_start = ggml_time_us();
++                    const float * hidden = llama_get_embeddings_nextn_ith(slot.ctx_tgt, tok_idx);
++                    if (hidden) {
++                        const auto observation = neg->evaluate(hidden);
++                        slot.neg_steps += 1;
++                        slot.neg_entropy_sum += observation.predicted_entropy;
++                        slot.neg_entropy_max = std::max(slot.neg_entropy_max, observation.predicted_entropy);
++                        if (observation.active) {
++                            slot.neg_activations += 1;
++                            float * logits = llama_get_logits_ith(slot.ctx_tgt, tok_idx);
++                            if (logits) {
++                                neg->guide_logits(logits, llama_vocab_n_tokens(vocab));
++                                slot.neg_guided += 1;
++                            }
++                        }
++                    }
++                    slot.neg_eval_us += ggml_time_us() - neg_start;
++                }
+                 id = common_sampler_sample(slot.smpl.get(), slot.ctx_tgt, tok_idx);
+             }
+ 
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 64afbc5ed..fec27cedf 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -361,6 +361,9 @@ json server_task_result_cmpl_final::to_json_non_oaicompat() {
+     if (!stream && !probs_output.empty()) {
+         res["completion_probabilities"] = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
+     }
++    if (!neg.is_null()) {
++        res["neg"] = neg;
++    }
+     return response_fields.empty() ? res : json_get_nested_values(response_fields, res);
+ }
+ 
+@@ -409,6 +412,9 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
+     if (stats.is_set()) {
+         res.push_back({"timings", stats.to_json()});
+     }
++    if (!neg.is_null()) {
++        res["neg"] = neg;
++    }
+ 
+     return res;
+ }
+@@ -457,6 +463,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
+     if (stats.is_set()) {
+         res.push_back({"timings", stats.to_json()});
+     }
++    if (!neg.is_null()) {
++        res["neg"] = neg;
++    }
+ 
+     return res;
+ }
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index b6da4d4bd..141728049 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -338,6 +338,7 @@ struct server_task_result_cmpl_final : server_task_result {
+     bool post_sampling_probs;
+     std::vector<completion_token_output> probs_output;
+     std::vector<std::string>  response_fields;
++    json neg = nullptr;
+ 
+     task_params generation_params;
+ 
