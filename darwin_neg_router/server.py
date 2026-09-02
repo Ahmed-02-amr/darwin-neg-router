@@ -19,6 +19,7 @@ from .backends import Backend, OllamaBackend, OpenAIBackend, TransformersNEGBack
 from .config import Settings
 from .gpqa import GPQAEnsembler
 from .router import SelectiveRouter, last_user_text
+from .routing_policy import VALID_ROUTING_PROFILES
 from .telemetry import TelemetryStore
 from .types import Candidate, ChatRequest
 
@@ -56,12 +57,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         neg_activation_threshold=settings.neg_activation_threshold,
         neg_min_activations=settings.neg_min_activations,
         route_tool_calls=settings.route_tool_calls,
+        review_max_tokens=settings.review_max_tokens,
+        truncation_recovery_tokens=settings.truncation_recovery_tokens,
         tool_phase_max_tokens=settings.tool_phase_max_tokens,
         max_parallel_tool_calls=settings.max_parallel_tool_calls,
         unchanged_tool_result_limit=settings.unchanged_tool_result_limit,
     )
-    gpqa = GPQAEnsembler(primary, primary, solver_tokens=2048, review_tokens=1024)
-    app = FastAPI(title="Darwin NEG Router", version="0.4.1")
+    gpqa = GPQAEnsembler(
+        primary,
+        primary,
+        solver_tokens=settings.gpqa_solver_tokens,
+        review_tokens=settings.gpqa_review_tokens,
+    )
+    app = FastAPI(title="Darwin NEG Router", version="0.4.4")
     app.state.settings = settings
     app.state.router = router
     app.state.gpqa = gpqa
@@ -126,6 +134,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "max_parallel_tool_calls": settings.max_parallel_tool_calls,
                 "unchanged_result_limit": settings.unchanged_tool_result_limit,
                 "long_form_max_tokens": settings.default_max_tokens,
+            },
+            "review_max_tokens": settings.review_max_tokens,
+            "truncation_recovery": {
+                "enabled": True,
+                "max_tokens": settings.truncation_recovery_tokens,
+                "max_attempts_per_generation": 1,
+            },
+            "adaptive_voter_weighting": {
+                "enabled": True,
+                "profiles": sorted(VALID_ROUTING_PROFILES),
+                "verifier_blinded_to_sampling": True,
+            },
+            "gpqa": {
+                "solver_max_tokens": settings.gpqa_solver_tokens,
+                "review_max_tokens": settings.gpqa_review_tokens,
             },
         }
 
@@ -241,6 +264,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             presence_penalty=float(body.get("presence_penalty", 0.0) or 0.0),
             frequency_penalty=float(body.get("frequency_penalty", 0.0) or 0.0),
             repeat_penalty=float(body.get("repeat_penalty", 1.0) or 1.0),
+            routing_profile=_routing_profile(body),
         )
         try:
             result = run_request(request, requested_model, body.get("ensemble", False))
@@ -271,6 +295,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if "max_tokens" not in body or int(body.get("max_tokens") or 0) <= 0:
             raise HTTPException(status_code=400, detail="max_tokens must be a positive integer")
         request = anthropic_chat_request(body, settings.default_max_tokens)
+        request.routing_profile = _routing_profile(body)
         try:
             result = run_request(request, requested_model, body.get("ensemble", False))
         except Exception:
@@ -294,6 +319,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"input_tokens": estimate_input_tokens(body)}
 
     return app
+
+
+def _routing_profile(body: dict[str, Any]) -> str | None:
+    darwin = body.get("darwin") if isinstance(body.get("darwin"), dict) else {}
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    value = (
+        darwin.get("routing_profile")
+        or metadata.get("darwin_routing_profile")
+        or body.get("routing_profile")
+    )
+    if value is None or not str(value).strip():
+        return None
+    profile = str(value).strip().lower()
+    if profile not in VALID_ROUTING_PROFILES:
+        valid = ", ".join(sorted(VALID_ROUTING_PROFILES))
+        raise HTTPException(status_code=400, detail=f"routing_profile must be one of: {valid}")
+    return profile
 
 
 def _openai_response(candidate: Candidate, model: str = "darwin-neg-auto") -> dict[str, Any]:

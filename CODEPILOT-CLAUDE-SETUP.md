@@ -10,6 +10,11 @@ The Darwin router serves both protocols from one local address:
 Do not add `/v1` to the Anthropic base URL. Claude Code appends
 `/v1/messages` itself.
 
+The bundled native profile exposes a `163840`-token total context window and a
+`43008`-token maximum output allowance. With the full output reserve, up to
+`120832` prompt tokens remain available. The native runner uses Q8 K/V cache,
+one slot, and Flash Attention while leaving the Q6_K model weights unchanged.
+
 ## Add Darwin as an Anthropic third-party provider
 
 1. Start Darwin NEG Control and wait for **Running**.

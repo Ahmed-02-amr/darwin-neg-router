@@ -21,6 +21,30 @@ paper. This is a reproducibility audit, not a claim about the authors' intent.
   mixed-FP4 quantization of `Darwin-9B-Opus`. It contains neither the NEG module
   file nor an evaluator and is not an Ollama/GGUF artifact.
 
+The shard match is exact, not a filename comparison:
+
+| Shard | Bytes | Shared SHA-256 LFS object ID |
+|---|---:|---|
+| `model-00001-of-00004.safetensors` | 5,276,436,216 | `8bbd456f1367d1d9d7273b0a5735a57ce73f6a56f5a09c3b99a8a607a0a5f65a` |
+| `model-00002-of-00004.safetensors` | 5,335,161,512 | `048129af3b6acde304c92fc262b12db11e25bc23a5187c42a60b0a6ee16749fb` |
+| `model-00003-of-00004.safetensors` | 5,368,717,440 | `7283cf97c0bc17a351e1b08ba6b6f3d4c2920704a6d1b1cacfb6ae6510c45730` |
+| `model-00004-of-00004.safetensors` | 3,325,988,568 | `53161974a653473c3829f77974fda95d7bbaabc62a9ee309925a663625fdf0ee` |
+
+The released sidecar is 16,785,908 bytes with SHA-256
+`8fcc1a5a9f7cdeaf2462af9f6de87ecf7626be8a96287e95bb2a20d63cbcb71a`.
+These values were checked from the Hub metadata and the local sidecar on
+2026-09-02.
+
+The two community imatrix Q6_K containers do not have matching whole-file
+hashes. The Opus-labelled file is 7,359,260,992 bytes with SHA-256
+`6ab52e0e34b4c6fe9583e88a0b8e53e18b0e0f2d6652d033fc3508059286a851`;
+the NEG-labelled file is 7,359,260,576 bytes with SHA-256
+`3304a4913eec467e6775cba66f563199ef4b14e8a1976232e2ec82b7dcaa49bc`.
+The project's local Q6_K matches the latter exactly. A GGUF header or metadata
+difference is enough to change the container hash, so this audit relies on the
+identical BF16 source shards to establish backbone identity and does not claim
+bit-identical quantized tensors without a tensor-by-tensor comparison.
+
 ## Released NEG helper
 
 The separate helper does contain a two-layer entropy head and a top-20 gate,
@@ -85,22 +109,31 @@ The exact 84.34% result should therefore be treated as a reported result that
 cannot presently be reproduced from the public artifacts alone. It is not
 valid to infer from that fact alone that the result is fabricated.
 
-## Local Ollama reconstruction
+## Local native reconstruction
 
 Ollama cannot attach the separate hidden-state head or inject a custom logits
-processor from a Modelfile. This project instead uses Ollama's native top-20
-log-probability output to calculate a conservative distribution-entropy signal.
-That signal can trigger candidate generation at request boundaries.
+processor from a Modelfile. This project therefore patches the exact
+Ollama-pinned llama.cpp runner to expose the normalized final hidden state,
+load the separately released NEG head, predict entropy for every generated
+token, and apply the released gate before sampling. Ollama remains the pinned
+source/runtime dependency; the model is served by this companion runner rather
+than by stock `ollama serve`.
 
-The explicit `darwin-neg-ensemble20` profile performs nineteen diverse Darwin
-calls plus one same-model verifier call. It matches the reported approximate
-compute budget, but it is intentionally labeled a reconstruction and is not
-claimed to reproduce the unpublished GPQA protocol or its 84.34% score.
+The general router sits above that native path. Its explicit 20-call profile
+uses fifteen role-diverse candidates, three specialist reviewers, one blinded
+evaluator, and one refiner. This is a transparent new implementation designed
+for general agentic work. It uses the same approximate compute budget as the
+upstream claim but is not presented as the unpublished FINAL-Bench evaluator
+or as a reproduction of the claimed 84.34% score.
 
 ## Primary sources
 
 - Model repository: https://huggingface.co/FINAL-Bench/Darwin-9B-NEG
 - Base checkpoint: https://huggingface.co/FINAL-Bench/Darwin-9B-Opus
+- Qwen parent: https://huggingface.co/Qwen/Qwen3.5-9B
+- Reasoning-distilled parent: https://huggingface.co/Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled
+- Opus imatrix GGUF: https://huggingface.co/mradermacher/Darwin-9B-Opus-i1-GGUF
+- NEG imatrix GGUF: https://huggingface.co/mradermacher/Darwin-9B-NEG-i1-GGUF
 - Public demo Space: https://huggingface.co/spaces/FINAL-Bench/Darwin-9B-NEG
 - Related V8 repository: https://huggingface.co/FINAL-Bench/Darwin-9B-NEG-x-Negentropy-V8
 - First-party NEG failure analysis: https://huggingface.co/FINAL-Bench/Darwin-28B-NEG

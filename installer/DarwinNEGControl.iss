@@ -1,5 +1,5 @@
 #define MyAppName "Darwin NEG Control"
-#define MyAppVersion "0.4.1"
+#define MyAppVersion "0.4.4"
 #define MyAppPublisher "Ahmed-02-amr"
 #define MyAppExeName "DarwinNEGControl.exe"
 

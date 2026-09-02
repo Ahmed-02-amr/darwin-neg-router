@@ -22,6 +22,17 @@ def test_telemetry_aggregates_without_prompt_content() -> None:
                     "ensemble": True,
                     "inference_calls": 5,
                     "reasons": ["neg_uncertainty"],
+                    "compute_prompt_tokens": 500,
+                    "compute_completion_tokens": 250,
+                    "task_policy": {"name": "exact", "confidence": 0.9},
+                    "candidate_temperatures": [0.0, 0.2],
+                    "winner": 0,
+                    "verifier_winner": 1,
+                    "adaptive_weighting_applied": True,
+                },
+                "truncation_recovery": {
+                    "attempted": True,
+                    "succeeded": True,
                 },
             },
         ),
@@ -31,10 +42,18 @@ def test_telemetry_aggregates_without_prompt_content() -> None:
     value = store.snapshot()
     assert value["requests"] == 1
     assert value["inference_calls"] == 5
-    assert value["completion_tokens"] == 50
-    assert value["tokens_per_second"] == 25
+    assert value["prompt_tokens"] == 500
+    assert value["completion_tokens"] == 250
+    assert value["tokens_per_second"] == 125
+    assert value["recent"][0]["client_input_tokens"] == 100
+    assert value["recent"][0]["client_output_tokens"] == 50
     assert value["neg_activation_rate"] == 0.1
     assert value["recent"][0]["route_reasons"] == ["neg_uncertainty"]
+    assert value["truncation_recoveries"] == 1
+    assert value["recent"][0]["truncation_recovery_succeeded"] is True
+    assert value["task_profiles"] == {"exact": 1}
+    assert value["adaptive_selection_changes"] == 1
+    assert value["recent"][0]["selected_temperature"] == 0.0
     assert "secret answer" not in str(value)
 
 

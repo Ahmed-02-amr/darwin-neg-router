@@ -23,3 +23,6 @@ build/
 dist/
 *.egg-info/
 benchmarks/data/
+benchmarks/results/gpqa-diamond-*-full.jsonl
+benchmarks/results/gpqa-v3-*.jsonl
+benchmarks/results/checkpoints/

@@ -1,10 +1,11 @@
 # Darwin-9B-NEG native inference stack
 
-This project serves the Q6_K Darwin-9B-Opus GGUF with the released Darwin NEG
-hidden-state head attached inside a patched, Ollama-pinned `llama-server`. A
-dual OpenAI Chat Completions and Anthropic Messages routing layer adds
-selective candidate generation, evaluator selection, guarded refinement, and
-an optional exact 20-call profile for CodePilot and Claude Code clients.
+This project serves the imatrix `Q6_K` Darwin-9B-NEG GGUF with its separately
+released Darwin NEG hidden-state head attached inside a patched, Ollama-pinned
+`llama-server`. A dual OpenAI Chat Completions and Anthropic Messages routing
+layer adds selective candidate generation, task-aware voting, specialist
+review, guarded refinement, and an optional exact 20-call profile for
+CodePilot and Claude Code clients.
 
 ```text
 CodePilot / Claude Code
@@ -19,6 +20,82 @@ CodePilot / Claude Code
 CodePilot remains responsible for repository tools, checkpoints, compaction,
 and the long-horizon task loop. This stack owns inference-time NEG, uncertainty
 routing, candidate evaluation, and response refinement.
+
+## What the base model actually is
+
+The upstream Darwin-9B-Opus lineage description and the released bytes tell
+the same story:
+
+```text
+Qwen/Qwen3.5-9B
+        +
+Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled
+        |
+        +-- DARE-TIES / MRI-guided evolutionary merge --> Darwin-9B-Opus
+                                                            |
+                                      frozen-backbone NEG training
+                                                            |
+                                      Darwin-9B-NEG = same LM backbone
+                                                      + separate NEG head/gate
+```
+
+According to that upstream description, Darwin-9B-Opus is a
+Qwen3.5-9B-family merge, not Claude Opus weights
+and not an Anthropic model runtime. One parent is Qwen's released 9B model; the
+other is a Qwen3.5-9B fine-tune trained on reasoning trajectories attributed to
+Claude Opus datasets. The `Opus` name describes that distilled training
+influence. Upstream then froze the resulting Darwin-9B-Opus language model and
+trained an approximately four-million-parameter entropy predictor and scalar
+gate alongside it.
+
+That distinction is not based only on model-card prose. The four BF16 language
+shards in `Darwin-9B-Opus` and `Darwin-9B-NEG` have identical byte sizes and
+identical Hugging Face LFS SHA-256 object IDs:
+
+| Language shard | Bytes | Opus SHA-256 | NEG SHA-256 |
+|---|---:|---|---|
+| `model-00001-of-00004.safetensors` | 5,276,436,216 | `8bbd456f1367d1d9d7273b0a5735a57ce73f6a56f5a09c3b99a8a607a0a5f65a` | same |
+| `model-00002-of-00004.safetensors` | 5,335,161,512 | `048129af3b6acde304c92fc262b12db11e25bc23a5187c42a60b0a6ee16749fb` | same |
+| `model-00003-of-00004.safetensors` | 5,368,717,440 | `7283cf97c0bc17a351e1b08ba6b6f3d4c2920704a6d1b1cacfb6ae6510c45730` | same |
+| `model-00004-of-00004.safetensors` | 3,325,988,568 | `53161974a653473c3829f77974fda95d7bbaabc62a9ee309925a663625fdf0ee` | same |
+
+The NEG repository adds `neg_modules.safetensors` (16,785,908 bytes,
+SHA-256 `8fcc1a5a9f7cdeaf2462af9f6de87ecf7626be8a96287e95bb2a20d63cbcb71a`).
+It is a sidecar, not part of those language shards.
+
+### Which Q6_K is this project serving?
+
+The whole-file GGUF hashes do **not** match each other:
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `mradermacher/Darwin-9B-Opus-i1-GGUF` `Darwin-9B-Opus.i1-Q6_K.gguf` | 7,359,260,992 | `6ab52e0e34b4c6fe9583e88a0b8e53e18b0e0f2d6652d033fc3508059286a851` |
+| `mradermacher/Darwin-9B-NEG-i1-GGUF` `Darwin-9B-NEG.i1-Q6_K.gguf` | 7,359,260,576 | `3304a4913eec467e6775cba66f563199ef4b14e8a1976232e2ec82b7dcaa49bc` |
+| local `models/gguf/Darwin-9B-NEG.i1-Q6_K.gguf` | 7,359,260,576 | `3304a4913eec467e6775cba66f563199ef4b14e8a1976232e2ec82b7dcaa49bc` |
+
+The local file is thus a byte-for-byte match for the released NEG-labelled
+imatrix Q6_K, not the Opus-labelled GGUF. The 416-byte container-size
+difference and whole-file hashes do not prove different quantized language
+tensors; GGUF metadata alone can change both. The identical upstream BF16
+shards are the stronger evidence that the underlying language backbone is the
+same. This project makes no stronger tensor-level claim without a full GGUF
+tensor comparison.
+
+### Base weights versus extended capability
+
+| Layer | Runs where | What it adds | What it does not add |
+|---|---|---|---|
+| Darwin-9B-Opus backbone | patched `llama-server` | the Qwen-family language, reasoning, and coding behavior | the separate NEG head or an agent loop |
+| Native NEG sidecar | once per generated token | predicted-entropy telemetry and gated top-k/temperature guidance for sampling | new factual knowledge, tools, or a changed greedy argmax |
+| Darwin router | once or selectively 5/20 calls per request | task classification, diverse candidates, evidence scoring, reliability priors, specialist review, refinement, truncation recovery, and tool-loop guards | weight training or persistent project memory |
+| CodePilot / Claude Code | client side | skills, MCP tools, repository actions, compaction, checkpoints, and the long-horizon control loop | native NEG token processing |
+
+The router is general-purpose rather than a GPQA wrapper. Its exact, coding,
+investigation, creative, and general policies change candidate roles,
+temperatures, sampling widths, and small post-verifier reliability priors. Tool
+schemas and tool results remain part of the original client contract. The
+benchmark harness merely selects the `exact` policy so the same production
+router can be measured under a fixed, auditable configuration.
 
 ## Windows controller and installer
 
@@ -97,6 +174,7 @@ while reusing Ollama's installed CUDA backend.
 - Ollama source: `b7871fc0d1d82fe109536efa3e0e8e411c766c75` (v0.32.15)
 - llama.cpp source: `9d77fa17254e1dee4b9e92504c91611a60b1359f` (b10488)
 - Native patch: `native/llama-b10488-neg.patch`
+- Released NEG sidecar SHA-256: `8fcc1a5a9f7cdeaf2462af9f6de87ecf7626be8a96287e95bb2a20d63cbcb71a`
 - NEG binary SHA-256: `c2ca7f61897ab3071afd022bc3bf7c0efa84c25b080d727bf4be4e2a36ff1e2a`
 - Current runner SHA-256: `411fe728880087baad30d0e40e2ed0ad6c1e828f697be7428880d21378a8cf57`
 
@@ -179,8 +257,8 @@ In CodePilot, open **Settings -> Providers -> Add Provider -> Custom API
 | Base URL | `http://127.0.0.1:11435/v1` | same |
 | API key | `EMPTY` | same |
 | Model Name | `darwin-neg-agent` | `darwin-neg-agent20` |
-| Context | `65536` | `65536` |
-| Output allowance | `16384` | task appropriate, up to `16384` by default |
+| Context | `163840` | `163840` |
+| Output allowance | `43008` | task appropriate, up to `43008` by default |
 | Temperature | `0` | candidates are routed internally |
 
 `darwin-neg-agent` preserves CodePilot `tools`, `tool_choice`,
@@ -194,11 +272,27 @@ CodePilot's OpenAI event validator.
 
 ### Tool-loop safety without reducing long-form output
 
-The gateway keeps the configured 16K maximum for reasoning, code, and final
-answers. A tool-enabled request first receives a 4K action-selection budget; if
+The gateway keeps the configured 42K maximum for reasoning, code, and final
+answers. Internal specialist reviews and evaluator verdicts receive a 3K
+allowance so thinking can complete before the required structured verdict;
+override it with `DARWIN_REVIEW_MAX_TOKENS`. A tool-enabled request first
+receives a 4K action-selection budget; if
 it reaches that boundary without a tool call, the request is automatically
 retried with the complete output allowance. This prevents runaway tool syntax
 from consuming the entire context while preserving long-form generation.
+
+If any ordinary generation still reaches its output boundary without a tool
+call, the router performs one deterministic continuation with a 2K budget. It
+receives a bounded tail of the interrupted draft and must immediately emit the
+pending tool action or concise final response without restarting its analysis.
+Visible partial output is retained, usage is combined, and recovery status is
+recorded in telemetry. Configure the allowance with
+`DARWIN_TRUNCATION_RECOVERY_TOKENS`; recovery never repeats recursively. The
+continuation remains part of the same candidate rather than becoming another
+ensemble vote, and it sees no other candidates. If its saved state is
+insufficient, it abstains and the verifier selects another candidate. Recovery
+inferences are reported separately from the requested ensemble budget as well
+as in the actual inference-call total.
 
 Within one response, exact duplicate actions are collapsed by canonical
 function name and JSON arguments. Distinct parallel actions remain ordered and
@@ -227,6 +321,41 @@ of these are true:
 - the proposed tool is high-impact; or
 - the caller sets `ensemble` explicitly.
 
+### Adaptive voter policy
+
+Before generating alternatives, the general router assigns an explainable task
+profile without spending another model call:
+
+| Profile | Candidate temperatures | Selection emphasis |
+|---|---|---|
+| `exact` | greedy through low | recomputation, definitions, units, bounds, exact format |
+| `coding` | greedy through moderate | repository evidence, valid tools, compatibility, tests |
+| `investigation` | low through diverse | information gain, falsifiable hypotheses, source quality |
+| `creative` | moderate through high | constraints, originality, audience fit, feasibility |
+| `general` | low through moderately diverse | correctness, instruction compliance, completeness |
+
+Every profile also supplies relevant candidate roles rather than applying
+software-engineering roles to math, research, or creative work. The evaluator
+sees candidate content and tool actions but is deliberately blinded to sampling
+temperature. It returns a 0–100 evidence score for every available candidate.
+Only after that independent judgment does the router add a small, profile-specific
+reliability prior. The maximum prior is 2.5 points, so it can resolve close calls
+but cannot rescue a candidate with materially weaker evidence. Duplicate answers
+gain no majority advantage because selection is score-based, and failed
+truncation recoveries remain unavailable.
+
+The response's `darwin.routing` metadata includes the detected profile and
+signals, candidate roles, temperatures, sampling widths, blinded evidence
+scores, priors, adjusted scores, and whether adaptive weighting changed the
+verifier's categorical winner. `/telemetry` aggregates task-profile counts and
+adaptive selection changes without retaining prompts or response text.
+
+For controlled evaluation, an OpenAI-compatible request may set
+`{"darwin":{"routing_profile":"exact"}}`. Anthropic Messages requests may set
+`{"metadata":{"darwin_routing_profile":"exact"}}`. Valid overrides are
+`exact`, `coding`, `investigation`, `creative`, and `general`; normal CodePilot
+traffic uses automatic detection.
+
 Valid selected tool calls are immutable across refinement unless the refiner
 emits the same function names and parsed arguments. This prevents an evaluator
 from turning a correct tool action into prose. The 20-call profile spends
@@ -241,9 +370,30 @@ For a custom one-off budget:
   "model": "darwin-neg-agent",
   "messages": [{"role": "user", "content": "Investigate this failure."}],
   "ensemble": 8,
-  "max_tokens": 16384
+  "max_tokens": 43008
 }
 ```
+
+### Long-context GPU profile
+
+The native launch paths allocate one `163840`-token slot, use `q8_0` for both
+K and V cache tensors, and force Flash Attention on. This keeps the Q6_K model
+fully GPU-resident on a 12 GB card while reserving up to `43008` tokens for
+thinking and output. The context size is the total sequence limit, so a request
+that reserves the full output allowance can retain at most `120832` prompt
+tokens. Q8 applies only to the temporary KV cache; model weights remain Q6_K.
+The single-slot configuration is intentional because additional parallel slots
+divide or multiply the available context-memory budget.
+
+The served GPQA profile uses a separate `6144`-token allowance for every
+solver, critic, juror, and arbiter call. This is large enough to reduce
+thinking-related answer truncation without allowing each member of a 20-call
+ensemble to consume the general router's full 42K generation budget. Override
+these independently with `DARWIN_GPQA_SOLVER_TOKENS` and
+`DARWIN_GPQA_REVIEW_TOKENS`. When a member still reaches the limit after stating
+an explicit conclusion but before printing the strict `FINAL: X` suffix, the
+router recovers that conclusion locally. This does not spend or hide a 21st
+ensemble inference.
 
 The separate GPQA reconstruction uses choice-order permutations, critics, and
 arbiters. Its adaptive 3–1 path now uses guarded consensus: disagreeing late
@@ -257,7 +407,7 @@ Current local results on Ryzen 5 7600X + RTX 5070 12 GB:
 | Check | Result |
 |---|---|
 | Native/PyTorch head parity | absolute error <= `2.4e-7` |
-| Unit/integration tests | `44 passed` |
+| Unit/integration tests | `63 passed` |
 | Duplicate tool burst regression | `780` identical calls collapsed to `1` |
 | Complex parallel tool validation | `3/3` distinct live calls preserved; `24/24` synthetic |
 | Stalled-result live recovery | third identical `403` fetch blocked; recovery completed in `2` calls |
@@ -287,11 +437,11 @@ python .\benchmarks\native_agent_validation.py `
   --output .\benchmarks\results\native-agent-validation.json
 
 python .\benchmarks\gpqa_reconstruction.py `
-  --backend native `
-  --model darwin-9b-neg-native `
+  --backend router `
+  --model darwin-neg-gpqa `
   --mode adaptive20 `
   --limit 1 `
-  --output .\benchmarks\results\native-neg-smoke.jsonl
+  --output .\benchmarks\results\router-gpqa-smoke.jsonl
 ```
 
 The public GPQA dataset is pinned to revision
@@ -299,9 +449,34 @@ The public GPQA dataset is pinned to revision
 answers are read only after inference for scoring and are never placed in
 solver, critic, juror, or arbiter prompts.
 
+### Pause and resume a full GPQA run
+
+Each completed item is flushed as one JSONL record. The general-router launcher
+always passes `--resume`, so it skips indices already present in the output:
+
+```powershell
+& .\scripts\run-gpqa-general-router20.ps1
+```
+
+If a worker finishes the next item while shutting down, reset the active file
+to a precise boundary without losing that record:
+
+```powershell
+& .\scripts\checkpoint-gpqa.ps1 `
+  -Results .\benchmarks\results\gpqa-diamond-v4-general-router20-adaptive-voting-full.jsonl `
+  -ResumeAt 70
+```
+
+Records from Q70 onward are moved to a timestamped local checkpoint, then the
+active JSONL is atomically replaced. Raw full-run outputs and checkpoints are
+ignored by Git because they include dataset text and model reasoning. The
+current local handoff is summarized in
+[`BENCHMARK-STATUS.md`](BENCHMARK-STATUS.md).
+
 ## Upstream audit
 
-`UPSTREAM-AUDIT.md` records the released checkpoint layout and the limitations
+`UPSTREAM-AUDIT.md` records the released checkpoint layout, exact provenance
+hashes, and the limitations
 of the upstream model/evaluator claims. In particular, the public language
 checkpoint and GGUF do not embed the NEG side-head, the upstream greedy top-k
 gate cannot change argmax, and the exact claimed 84.34% evaluation procedure is

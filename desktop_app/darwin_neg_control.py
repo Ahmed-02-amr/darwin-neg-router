@@ -18,8 +18,12 @@ from typing import Any
 
 
 APP_NAME = "Darwin NEG Control"
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.4"
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+DEFAULT_CONTEXT_SIZE = 163840
+DEFAULT_MAX_TOKENS = 43008
+KV_CACHE_TYPE_K = "q8_0"
+KV_CACHE_TYPE_V = "q8_0"
 BG = "#080d18"
 HEADER = "#0a1220"
 PANEL = "#101827"
@@ -334,12 +338,18 @@ class DarwinControlApp:
             "model_path": self._discover_model(),
             "native_port": 11436,
             "router_port": 11435,
-            "context_size": 65536,
-            "max_tokens": 16384,
+            "context_size": DEFAULT_CONTEXT_SIZE,
+            "max_tokens": DEFAULT_MAX_TOKENS,
         }
         try:
             value = json.loads(self.config_path.read_text(encoding="utf-8"))
             defaults.update({key: value[key] for key in defaults if key in value})
+            if (
+                defaults["context_size"] == 65536
+                and defaults["max_tokens"] == 16384
+            ):
+                defaults["context_size"] = DEFAULT_CONTEXT_SIZE
+                defaults["max_tokens"] = DEFAULT_MAX_TOKENS
         except (OSError, ValueError, TypeError):
             pass
         return defaults
@@ -714,6 +724,8 @@ class DarwinControlApp:
                     "--ctx-size", str(config["context_size"]),
                     "--parallel", "1",
                     "--n-gpu-layers", "99",
+                    "--cache-type-k", KV_CACHE_TYPE_K,
+                    "--cache-type-v", KV_CACHE_TYPE_V,
                     "--flash-attn", "on",
                     "--jinja",
                     "--reasoning", "on",
@@ -743,6 +755,10 @@ class DarwinControlApp:
                     "DARWIN_PORT": str(config["router_port"]),
                     "DARWIN_MAX_CONTEXT": str(config["context_size"]),
                     "DARWIN_MAX_TOKENS": str(config["max_tokens"]),
+                    "DARWIN_REVIEW_MAX_TOKENS": "3072",
+                    "DARWIN_GPQA_SOLVER_TOKENS": "6144",
+                    "DARWIN_GPQA_REVIEW_TOKENS": "6144",
+                    "DARWIN_TRUNCATION_RECOVERY_TOKENS": "2048",
                     "DARWIN_MAX_ENSEMBLE_INFERENCES": "20",
                     "DARWIN_NEG_ACTIVATION_THRESHOLD": "0.05",
                     "DARWIN_NEG_MIN_ACTIVATIONS": "16",
@@ -936,6 +952,7 @@ class DarwinControlApp:
                     self._set_buttons(running=False, busy=False)
                     if self.closing:
                         self.root.destroy()
+                        return
                 elif kind == "error":
                     self._set_status("Error", str(payload), RED)
                     self._set_buttons(running=False, busy=False)
@@ -944,8 +961,7 @@ class DarwinControlApp:
                     self._apply_telemetry(payload)
         except queue.Empty:
             pass
-        if not self.closing:
-            self.root.after(150, self._drain_events)
+        self.root.after(150, self._drain_events)
 
     def _apply_telemetry(self, payload: dict[str, Any]) -> None:
         router_ok, native_ok = payload["router"], payload["native"]
@@ -1064,8 +1080,8 @@ class DarwinControlApp:
 
     def _open_codepilot_setup(self) -> None:
         port = self.router_port_var.get().strip() or "11435"
-        context = self.context_var.get().strip() or "65536"
-        output = self.output_var.get().strip() or "16384"
+        context = self.context_var.get().strip() or str(DEFAULT_CONTEXT_SIZE)
+        output = self.output_var.get().strip() or str(DEFAULT_MAX_TOKENS)
         key_value = "EMPTY" if not os.environ.get("DARWIN_API_KEY") else "Use the DARWIN_API_KEY value from your environment"
         anthropic_config = "\n".join(
             (
@@ -1076,6 +1092,7 @@ class DarwinControlApp:
                 "Ensemble model: darwin-neg-agent20",
                 f"Context window: {context}",
                 f"Max output: {output}",
+                f"Native KV cache: {KV_CACHE_TYPE_K}/{KV_CACHE_TYPE_V} · Flash Attention on",
             )
         )
         openai_config = "\n".join(
@@ -1087,6 +1104,7 @@ class DarwinControlApp:
                 "Ensemble model: darwin-neg-agent20",
                 f"Context window: {context}",
                 f"Max output: {output}",
+                f"Native KV cache: {KV_CACHE_TYPE_K}/{KV_CACHE_TYPE_V} · Flash Attention on",
                 "Temperature: 0 (candidate diversity is routed internally)",
             )
         )

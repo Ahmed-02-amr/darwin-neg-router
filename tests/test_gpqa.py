@@ -1,6 +1,7 @@
 from darwin_neg_router.backends import Backend
 from darwin_neg_router.gpqa import (
     GPQAEnsembler,
+    candidate_answer,
     canonicalize_answer,
     deterministic_orderings,
     extract_answer,
@@ -45,7 +46,27 @@ def test_balanced_deterministic_orderings() -> None:
 def test_answer_parsing_and_canonicalization() -> None:
     assert extract_answer("work\nFINAL: **C**") == 2
     assert extract_answer("work\n### Final Answer\n\nB") == 1
+    assert extract_answer("") is None
     assert canonicalize_answer(2, (3, 2, 0, 1)) == 0
+
+
+def test_explicit_conclusion_is_recovered_from_length_truncated_reasoning() -> None:
+    truncated = Candidate(
+        reasoning_content=(
+            "The numerical integral is 1.87, so the distance is 8 Gpc. "
+            "Therefore my answer is A."
+        ),
+        finish_reason="length",
+    )
+    assert candidate_answer(truncated) == 0
+
+
+def test_loose_conclusion_recovery_is_not_used_for_completed_reasoning() -> None:
+    completed = Candidate(
+        reasoning_content="One discarded possibility says the answer is A, but this is not final.",
+        finish_reason="stop",
+    )
+    assert candidate_answer(completed) is None
 
 
 def test_unanimous_adaptive_stops_after_four_permutations() -> None:
@@ -100,3 +121,10 @@ def test_full_schedule_uses_twenty_calls() -> None:
     result = GPQAEnsembler(backend).solve(QUESTION, mode="full20")
     assert result.metadata["inference_calls"] == 20
     assert len(backend.requests) == 20
+
+
+def test_unparsed_answer_is_scored_unparsed_instead_of_defaulting_to_a() -> None:
+    backend = FixedBackend(["not-parseable"])
+    result = GPQAEnsembler(backend).solve(QUESTION, mode="greedy")
+    assert result.content == "FINAL: UNPARSED"
+    assert result.metadata["predicted"] is None

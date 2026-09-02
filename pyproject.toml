@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "darwin-neg-router"
-version = "0.4.1"
+version = "0.4.4"
 description = "Native Darwin NEG inference and selective 20-call refinement for CodePilot"
 requires-python = ">=3.11"
 dependencies = [

@@ -51,6 +51,7 @@ class ChatRequest:
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
     repeat_penalty: float = 1.0
+    routing_profile: str | None = None
 
 
 @dataclass

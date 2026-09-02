@@ -127,6 +127,11 @@ class OpenAIBackend(Backend):
                 body["parallel_tool_calls"] = request.parallel_tool_calls
         if request.stop is not None:
             body["stop"] = request.stop
+        # A router-facing benchmark/client may explicitly select one of the
+        # general router's task policies. Never forward this gateway extension
+        # into the native llama.cpp server used behind the router.
+        if request.routing_profile and not self.native_neg:
+            body["darwin"] = {"routing_profile": request.routing_profile}
         data = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -168,12 +173,13 @@ class OpenAIBackend(Backend):
                     "top20_distribution_entropy",
                 ),
                 "neg_mode": "released_head" if released_neg else "runtime_surrogate",
+                "darwin": payload.get("darwin", {}),
             },
         )
 
 
 class TransformersNEGBackend(Backend):
-    def __init__(self, model_id: str, *, load_in_4bit: bool = True, max_context: int = 32768):
+    def __init__(self, model_id: str, *, load_in_4bit: bool = True, max_context: int = 163840):
         self.model_id = model_id
         self.load_in_4bit = load_in_4bit
         self.max_context = max_context

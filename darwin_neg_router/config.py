@@ -25,8 +25,12 @@ class Settings:
     native_url: str = "http://127.0.0.1:11436/v1"
     native_model: str = "darwin-9b-neg-native"
     hf_model: str = "FINAL-Bench/Darwin-9B-NEG"
-    max_context: int = 65536
-    default_max_tokens: int = 16384
+    max_context: int = 163840
+    default_max_tokens: int = 43008
+    review_max_tokens: int = 3072
+    gpqa_solver_tokens: int = 6144
+    gpqa_review_tokens: int = 6144
+    truncation_recovery_tokens: int = 2048
     candidates: int = 3
     max_ensemble_inferences: int = 20
     candidate_temperature: float = 0.45
@@ -57,6 +61,30 @@ class Settings:
             hf_model=os.getenv("DARWIN_HF_MODEL", cls.hf_model),
             max_context=int(os.getenv("DARWIN_MAX_CONTEXT", cls.max_context)),
             default_max_tokens=int(os.getenv("DARWIN_MAX_TOKENS", cls.default_max_tokens)),
+            review_max_tokens=max(
+                1024,
+                min(16384, int(os.getenv("DARWIN_REVIEW_MAX_TOKENS", cls.review_max_tokens))),
+            ),
+            gpqa_solver_tokens=max(
+                1024,
+                min(16384, int(os.getenv("DARWIN_GPQA_SOLVER_TOKENS", cls.gpqa_solver_tokens))),
+            ),
+            gpqa_review_tokens=max(
+                1024,
+                min(16384, int(os.getenv("DARWIN_GPQA_REVIEW_TOKENS", cls.gpqa_review_tokens))),
+            ),
+            truncation_recovery_tokens=max(
+                256,
+                min(
+                    8192,
+                    int(
+                        os.getenv(
+                            "DARWIN_TRUNCATION_RECOVERY_TOKENS",
+                            cls.truncation_recovery_tokens,
+                        )
+                    ),
+                ),
+            ),
             candidates=max(1, int(os.getenv("DARWIN_CANDIDATES", cls.candidates))),
             max_ensemble_inferences=max(
                 2,

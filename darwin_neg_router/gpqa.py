@@ -21,6 +21,22 @@ _ANSWER_PATTERNS = (
     ),
     re.compile(r"\bANSWER\s*[:=]\s*\**([A-D])\**\b", re.IGNORECASE),
 )
+_TRUNCATED_CONCLUSION_PATTERNS = (
+    re.compile(
+        r"\b(?:the\s+)?(?:correct|final)\s+(?:answer|option|choice)\s*"
+        r"(?:(?:is|would\s+be)\s*)?[:=]?\s*\**(?:option\s+)?([A-D])\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:my\s+)?answer\s+(?:is|would\s+be)\s+\**(?:option\s+)?([A-D])\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:choose|select|go\s+with|closest\s+to|matches)\s+(?:answer\s+|choice\s+)?"
+        r"(?:option\s+)?([A-D])\b",
+        re.IGNORECASE,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +74,8 @@ class GPQACall:
             "seed": self.seed,
             "prompt_tokens": self.candidate.prompt_tokens,
             "completion_tokens": self.candidate.completion_tokens,
+            "finish_reason": self.candidate.finish_reason,
+            "model": self.candidate.metadata.get("model"),
             "neg": self.candidate.metadata.get("neg", {}),
             "reasoning": _bounded_trace(self.candidate, 1800),
         }
@@ -102,7 +120,7 @@ def extract_answer(text: str) -> int | None:
         if matches:
             return LABELS.index(matches[-1].group(1).upper())
     stripped = text.strip().upper().rstrip(". )]")
-    if stripped in LABELS:
+    if len(stripped) == 1 and stripped in LABELS:
         return LABELS.index(stripped)
     return None
 
@@ -113,7 +131,19 @@ def canonicalize_answer(presented: int | None, ordering: tuple[int, int, int, in
 
 def candidate_answer(candidate: Candidate) -> int | None:
     visible = extract_answer(candidate.content)
-    return visible if visible is not None else extract_answer(candidate.reasoning_content)
+    if visible is not None:
+        return visible
+    reasoned = extract_answer(candidate.reasoning_content)
+    if reasoned is not None:
+        return reasoned
+    if candidate.finish_reason not in {"length", "max_tokens"}:
+        return None
+    tail = (candidate.reasoning_content + "\n" + candidate.content)[-2400:]
+    for pattern in _TRUNCATED_CONCLUSION_PATTERNS:
+        matches = list(pattern.finditer(tail))
+        if matches:
+            return LABELS.index(matches[-1].group(1).upper())
+    return None
 
 
 class GPQAEnsembler:
@@ -128,8 +158,8 @@ class GPQAEnsembler:
         solver: Backend,
         verifier: Backend | None = None,
         *,
-        solver_tokens: int = 2048,
-        review_tokens: int = 1024,
+        solver_tokens: int = 6144,
+        review_tokens: int = 6144,
     ):
         self.solver = solver
         self.verifier = verifier or solver
@@ -396,21 +426,24 @@ class GPQAEnsembler:
         *,
         stop_reason: str | None = None,
     ) -> Candidate:
-        if predicted is None:
-            predicted = 0
+        predicted_label = LABELS[predicted] if predicted is not None else None
         chosen = next(
-            (call.candidate for call in reversed(calls) if call.canonical_answer == predicted),
+            (
+                call.candidate
+                for call in reversed(calls)
+                if predicted is not None and call.canonical_answer == predicted
+            ),
             calls[-1].candidate,
         )
         return Candidate(
-            content=f"FINAL: {LABELS[predicted]}",
+            content=f"FINAL: {predicted_label}" if predicted_label else "FINAL: UNPARSED",
             reasoning_content=chosen.reasoning_content,
             prompt_tokens=sum(call.candidate.prompt_tokens for call in calls),
             completion_tokens=sum(call.candidate.completion_tokens for call in calls),
             metadata={
                 "backend": "darwin-gpqa-ensemble",
                 "profile": mode,
-                "predicted": LABELS[predicted],
+                "predicted": predicted_label,
                 "inference_calls": len(calls),
                 "stop_reason": stop_reason,
                 "votes": _print_votes(calls),

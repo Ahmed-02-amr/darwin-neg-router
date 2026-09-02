@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from typing import Any
 
 from .types import Candidate
@@ -29,13 +29,45 @@ class TelemetryStore:
         self._tool_stalled_calls_blocked = 0
         self._tool_parallel_overflow_removed = 0
         self._tool_recovery_inferences = 0
+        self._truncation_recoveries = 0
+        self._task_profiles: Counter[str] = Counter()
+        self._adaptive_selection_changes = 0
 
     def record(self, candidate: Candidate, model: str, latency_seconds: float) -> None:
         metadata = candidate.metadata or {}
         routing = metadata.get("routing") or {}
         neg = metadata.get("neg") or {}
         tool_guard = metadata.get("tool_guard") or {}
+        truncation_recovery = metadata.get("truncation_recovery") or {}
+        recovery_inferences = routing.get("truncation_recovery_inferences")
+        if recovery_inferences is None:
+            recovery_inferences = truncation_recovery.get("inferences")
+        if recovery_inferences is None:
+            recovery_inferences = int(bool(truncation_recovery.get("attempted", False)))
+        truncation_recovery_inferences = max(0, int(recovery_inferences or 0))
+        task_policy = routing.get("task_policy") or {}
+        task_profile = str(task_policy.get("name") or "unknown")
+        winner = routing.get("winner")
+        temperatures = routing.get("candidate_temperatures") or [0.0]
+        selected_temperature = None
+        if isinstance(winner, int) and 0 <= winner < len(temperatures):
+            selected_temperature = float(temperatures[winner])
+        elif not routing.get("ensemble", False):
+            selected_temperature = float(temperatures[0])
+        adaptive_selection_changed = bool(
+            routing.get("adaptive_weighting_applied", False)
+            and isinstance(routing.get("verifier_winner"), int)
+            and routing.get("verifier_winner") != winner
+        )
         calls = max(1, int(routing.get("inference_calls", 1) or 1))
+        client_input_tokens = max(0, int(candidate.prompt_tokens))
+        client_output_tokens = max(0, int(candidate.completion_tokens))
+        compute_prompt_tokens = max(
+            0, int(routing.get("compute_prompt_tokens", client_input_tokens) or 0)
+        )
+        compute_completion_tokens = max(
+            0, int(routing.get("compute_completion_tokens", client_output_tokens) or 0)
+        )
         neg_steps = max(0, int(neg.get("steps", 0) or 0))
         neg_activations = max(0, int(neg.get("activations", 0) or 0))
         neg_guided = max(0, int(neg.get("guided_steps", 0) or 0))
@@ -43,11 +75,22 @@ class TelemetryStore:
             "timestamp": time.time(),
             "model": model,
             "latency_seconds": max(0.0, float(latency_seconds)),
-            "prompt_tokens": max(0, int(candidate.prompt_tokens)),
-            "completion_tokens": max(0, int(candidate.completion_tokens)),
+            # Existing aggregate fields remain compute-oriented so throughput
+            # and total-work telemetry continue to describe the whole router.
+            "prompt_tokens": compute_prompt_tokens,
+            "completion_tokens": compute_completion_tokens,
+            "client_input_tokens": client_input_tokens,
+            "client_output_tokens": client_output_tokens,
             "inference_calls": calls,
             "ensemble": bool(routing.get("ensemble", False)),
             "route_reasons": list(routing.get("reasons") or []),
+            "task_profile": task_profile,
+            "task_profile_confidence": task_policy.get("confidence"),
+            "selected_temperature": selected_temperature,
+            "adaptive_weighting_applied": bool(
+                routing.get("adaptive_weighting_applied", False)
+            ),
+            "adaptive_selection_changed": adaptive_selection_changed,
             "finish_reason": candidate.finish_reason,
             "tool_calls": len(candidate.tool_calls),
             "neg_signal": neg.get("signal") or metadata.get("neg_signal"),
@@ -68,6 +111,10 @@ class TelemetryStore:
             "tool_recovery_inferences": max(
                 0, int(tool_guard.get("recovery_inferences", 0) or 0)
             ),
+            "truncation_recoveries": truncation_recovery_inferences,
+            "truncation_recovery_succeeded": bool(
+                truncation_recovery.get("succeeded", False)
+            ),
         }
         with self._lock:
             self._requests += 1
@@ -85,6 +132,9 @@ class TelemetryStore:
                 "tool_parallel_overflow_removed"
             ]
             self._tool_recovery_inferences += entry["tool_recovery_inferences"]
+            self._truncation_recoveries += entry["truncation_recoveries"]
+            self._task_profiles[task_profile] += 1
+            self._adaptive_selection_changes += int(adaptive_selection_changed)
             self._history.appendleft(entry)
 
     def record_error(self) -> None:
@@ -117,5 +167,8 @@ class TelemetryStore:
                 "tool_stalled_calls_blocked": self._tool_stalled_calls_blocked,
                 "tool_parallel_overflow_removed": self._tool_parallel_overflow_removed,
                 "tool_recovery_inferences": self._tool_recovery_inferences,
+                "truncation_recoveries": self._truncation_recoveries,
+                "task_profiles": dict(self._task_profiles),
+                "adaptive_selection_changes": self._adaptive_selection_changes,
                 "recent": list(self._history),
             }

@@ -3,7 +3,11 @@ param(
     [string]$RunnerPath = '',
     [string]$HeadPath = '',
     [int]$Port = 11436,
-    [int]$ContextSize = 65536
+    [int]$ContextSize = 163840,
+    [ValidateSet('f16', 'q8_0', 'q4_0')]
+    [string]$CacheTypeK = 'q8_0',
+    [ValidateSet('f16', 'q8_0', 'q4_0')]
+    [string]$CacheTypeV = 'q8_0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,9 +52,10 @@ $env:PATH = "$cudaDir;$runnerDir;$env:PATH"
     --ctx-size $ContextSize `
     --parallel 1 `
     --n-gpu-layers 99 `
+    --cache-type-k $CacheTypeK `
+    --cache-type-v $CacheTypeV `
     --flash-attn on `
     --jinja `
     --reasoning on `
     --reasoning-format deepseek `
     --no-webui
-
